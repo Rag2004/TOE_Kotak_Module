@@ -1,0 +1,7 @@
+"""Fill-price labels. Strings match rms/app/price_source.py."""
+from __future__ import annotations
+
+PRICE_SOURCE_TRADED = "TRADED_PRICE"
+PRICE_SOURCE_AVERAGE_TRADED = "AVERAGE_TRADED_PRICE"
+PRICE_SOURCE_REFERENCE_LTP_FALLBACK = "REFERENCE_LTP_FALLBACK"
+PRICE_SOURCE_MISSING = "MISSING_PRICE"

@@ -1,0 +1,8 @@
+"""Run TOE Kotak (port 8005)."""
+import uvicorn
+
+from app.config import settings
+from app.main import app
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=settings.TOE_KOTAK_PORT)

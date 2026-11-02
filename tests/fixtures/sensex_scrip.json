@@ -1,0 +1,10 @@
+[
+  {
+    "pTrdSymbol": "SENSEX24OCT79800PE",
+    "pExchSeg": "bse_fo",
+    "pSymbolName": "SENSEX",
+    "pOptionType": "PE",
+    "dStrikePrice": "7980000",
+    "pExpiryDate": "28OCT2026"
+  }
+]
