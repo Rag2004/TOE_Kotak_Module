@@ -1,8 +1,8 @@
 # TOE Kotak Module is its own tree
 
-Canonical remote, when published: https://github.com/IX7TechnologyResearch/TOE_Kotak_Module
+Canonical remote: https://github.com/Rag2004/TOE_Kotak_Module
 
-This tree is the Kotak Neo Trade Order Executor (Redis intent consumer, Neo UAT
+This tree is the Kotak Neo Trade Order Executor (Redis intent consumer, Neo live
 orders, order-feed fills, execution publisher, port 8005).
 
 ## Layout
@@ -18,8 +18,8 @@ orders, order-feed fills, execution publisher, port 8005).
 - Execution stream: `stream:executions` with `broker_id: kotak_sandbox`
 - Health: `GET /toe/live`, `GET /toe/ready`
 - Infra: `REDIS_URL`, `MONGO_URI`
-- Broker: Neo `environment=uat` via `NEO_*` / `TOE_KOTAK_*`
+- Broker: Neo `environment=prod` via `NEO_*` / `TOE_KOTAK_*`. Login material is Redis `broker:kotak:prod`.
 - Desk build: `TOE_KOTAK_MODULE_DIR` pointing at this clone (same pattern as `TOE_DHAN_MODULE_DIR=/opt/TOE_Dhan_Module`)
 - Port: `8005` (`TOE_KOTAK_PORT`)
 
-The service refuses `NEO_ENVIRONMENT` other than `uat`.
+The service refuses `NEO_ENVIRONMENT` other than `prod`.

@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     TOE_KOTAK_PORT: int = 8005
 
     NEO_ENVIRONMENT: str = Field(
-        default="uat",
+        default="prod",
         validation_alias=AliasChoices("NEO_ENVIRONMENT", "TOE_KOTAK_ENVIRONMENT"),
     )
     NEO_CONSUMER_KEY: str = Field(

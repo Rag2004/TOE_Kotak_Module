@@ -1,6 +1,6 @@
 import pytest
 
-from app.session import KotakSession, SessionError, SessionExpired, assert_uat, check_token_and_client_id, totp_code
+from app.session import KotakSession, SessionError, SessionExpired, assert_neo_environment, check_token_and_client_id, totp_code
 
 
 @pytest.fixture(autouse=True)
@@ -25,15 +25,15 @@ def test_token_and_client_id_shape():
         check_token_and_client_id(_TOKEN, "UCC1")
 
 
-def test_refuses_prod():
+def test_refuses_uat():
     with pytest.raises(SessionError):
-        assert_uat("prod")
+        assert_neo_environment("uat")
 
 
 def test_login_calls_totp_then_validate(monkeypatch):
-    monkeypatch.setattr("app.session.settings.NEO_ENVIRONMENT", "uat")
+    monkeypatch.setattr("app.session.settings.NEO_ENVIRONMENT", "prod")
     monkeypatch.setattr("app.session.settings.NEO_CONSUMER_KEY", _TOKEN)
-    monkeypatch.setattr("app.session.settings.NEO_MOBILE_NUMBER", "+919999999999")
+    monkeypatch.setattr("app.session.settings.NEO_MOBILE_NUMBER", "9999999999")
     monkeypatch.setattr("app.session.settings.NEO_UCC", _CLIENT)
     monkeypatch.setattr("app.session.settings.NEO_MPIN", "1234")
     monkeypatch.setattr("app.session.settings.NEO_TOTP", "111111")
@@ -42,16 +42,16 @@ def test_login_calls_totp_then_validate(monkeypatch):
 
     class Client:
         def totp_login(self, **kwargs):
-            calls.append(("login", kwargs["totp"]))
+            calls.append(("login", kwargs["totp"], kwargs["mobile_number"]))
             return {"stat": "Ok"}
 
         def totp_validate(self, **kwargs):
             calls.append(("validate", kwargs["mpin"]))
-            return {"stat": "Ok"}
+            return {"data": {"status": "success", "token": "trade", "sid": "sid1"}}
 
     session = KotakSession(client_factory=lambda environment: Client())
     session.login()
-    assert calls == [("login", "111111"), ("validate", "1234")]
+    assert calls == [("login", "111111", "+919999999999"), ("validate", "1234")]
     assert session.authenticated
 
 
@@ -60,9 +60,9 @@ def test_login_calls_totp_then_validate(monkeypatch):
     [("NEO_CONSUMER_KEY", "NEO_ACCESS_TOKEN"), ("NEO_UCC", "NEO_CLIENT_ID")],
 )
 def test_missing_token_or_client_id_skips_totp(monkeypatch, blank, label):
-    monkeypatch.setattr("app.session.settings.NEO_ENVIRONMENT", "uat")
+    monkeypatch.setattr("app.session.settings.NEO_ENVIRONMENT", "prod")
     monkeypatch.setattr("app.session.settings.NEO_CONSUMER_KEY", _TOKEN)
-    monkeypatch.setattr("app.session.settings.NEO_MOBILE_NUMBER", "+919999999999")
+    monkeypatch.setattr("app.session.settings.NEO_MOBILE_NUMBER", "9999999999")
     monkeypatch.setattr("app.session.settings.NEO_UCC", _CLIENT)
     monkeypatch.setattr("app.session.settings.NEO_MPIN", "1234")
     monkeypatch.setattr("app.session.settings.NEO_TOTP", "111111")
@@ -91,7 +91,7 @@ def test_missing_token_or_client_id_skips_totp(monkeypatch, blank, label):
 
 
 def test_login_prefers_redis_secret_over_env_totp(monkeypatch):
-    monkeypatch.setattr("app.session.settings.NEO_ENVIRONMENT", "uat")
+    monkeypatch.setattr("app.session.settings.NEO_ENVIRONMENT", "prod")
     monkeypatch.setattr("app.session.settings.NEO_CONSUMER_KEY", "env-token")
     monkeypatch.setattr("app.session.settings.NEO_MOBILE_NUMBER", "000")
     monkeypatch.setattr("app.session.settings.NEO_UCC", "ZZZZZ")
@@ -102,7 +102,7 @@ def test_login_prefers_redis_secret_over_env_totp(monkeypatch):
         lambda: {
             "access_token": _TOKEN,
             "client_id": _CLIENT,
-            "mobile": "+919999999999",
+            "mobile": "9999999999",
             "mpin": "1234",
             "totp_secret": "JBSWY3DPEHPK3PXP",
         },
@@ -111,24 +111,46 @@ def test_login_prefers_redis_secret_over_env_totp(monkeypatch):
 
     class Client:
         def totp_login(self, **kwargs):
-            calls.append(kwargs["totp"])
+            calls.append(kwargs)
             return {"stat": "Ok"}
 
         def totp_validate(self, **kwargs):
             calls.append(kwargs["mpin"])
-            return {"stat": "Ok"}
+            return {"data": {"status": "success", "token": "trade", "sid": "sid1"}}
 
     session = KotakSession(client_factory=lambda environment: Client())
     session.login()
-    assert calls[0] != "999999"
-    assert calls[0] == totp_code("JBSWY3DPEHPK3PXP")
+    assert calls[0]["totp"] != "999999"
+    assert calls[0]["totp"] == totp_code("JBSWY3DPEHPK3PXP")
+    assert calls[0]["mobile_number"] == "+919999999999"
     assert calls[1] == "1234"
 
 
-def test_validate_403_is_session_expired(monkeypatch):
-    monkeypatch.setattr("app.session.settings.NEO_ENVIRONMENT", "uat")
+def test_empty_validate_is_rejected(monkeypatch):
+    monkeypatch.setattr("app.session.settings.NEO_ENVIRONMENT", "prod")
     monkeypatch.setattr("app.session.settings.NEO_CONSUMER_KEY", _TOKEN)
     monkeypatch.setattr("app.session.settings.NEO_MOBILE_NUMBER", "+919999999999")
+    monkeypatch.setattr("app.session.settings.NEO_UCC", _CLIENT)
+    monkeypatch.setattr("app.session.settings.NEO_MPIN", "1234")
+    monkeypatch.setattr("app.session.settings.NEO_TOTP", "111111")
+
+    class Client:
+        def totp_login(self, **kwargs):
+            return {"stat": "Ok"}
+
+        def totp_validate(self, **kwargs):
+            return {}
+
+    session = KotakSession(client_factory=lambda environment: Client())
+    with pytest.raises(SessionError, match="session"):
+        session.login()
+    assert session.authenticated is False
+
+
+def test_validate_403_is_session_expired(monkeypatch):
+    monkeypatch.setattr("app.session.settings.NEO_ENVIRONMENT", "prod")
+    monkeypatch.setattr("app.session.settings.NEO_CONSUMER_KEY", _TOKEN)
+    monkeypatch.setattr("app.session.settings.NEO_MOBILE_NUMBER", "9999999999")
     monkeypatch.setattr("app.session.settings.NEO_UCC", _CLIENT)
     monkeypatch.setattr("app.session.settings.NEO_MPIN", "1234")
     monkeypatch.setattr("app.session.settings.NEO_TOTP", "111111")

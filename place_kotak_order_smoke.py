@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Place one Kotak Neo UAT order, or print the payload with --dry-run.
+"""Place one Kotak Neo live order, or print the payload with --dry-run.
 
-Refuses any environment other than uat. Credentials come from the environment
-or this module's .env. Nothing here targets production.
+Refuses any environment other than prod. Credentials come from the environment
+or this module's .env.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pathlib import Path
 
 from app.broker import broker, to_neo_order
 from app.order_feed import order_feed
-from app.session import SessionError, assert_uat
+from app.session import SessionError, assert_neo_environment
 from app.symbol_map import symbol_map
 
 
@@ -35,8 +35,8 @@ def build_intent(args: argparse.Namespace) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Kotak Neo UAT order smoke")
-    parser.add_argument("--environment", default="uat")
+    parser = argparse.ArgumentParser(description="Kotak Neo live order smoke")
+    parser.add_argument("--environment", default="prod")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--scrip-json", default="")
     parser.add_argument("--segment", default="BSE_FNO")
@@ -47,12 +47,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--side", default="BUY")
     parser.add_argument("--quantity", type=int, default=1)
     parser.add_argument("--price", default="1.00")
-    parser.add_argument("--signal-id", default="kotak-uat-smoke")
+    parser.add_argument("--signal-id", default="kotak-live-smoke")
     parser.add_argument("--preflight", action="store_true")
     args = parser.parse_args(argv)
 
     try:
-        assert_uat(args.environment)
+        assert_neo_environment(args.environment)
     except SessionError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -67,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
     trading_symbol = symbol_map.resolve(intent)
     payload = to_neo_order(intent, trading_symbol)
     if args.dry_run:
-        print(json.dumps({"environment": "uat", "trading_symbol": trading_symbol, "place_order": payload}, indent=2))
+        print(json.dumps({"environment": "prod", "trading_symbol": trading_symbol, "place_order": payload}, indent=2))
         return 0
 
     if args.preflight and hasattr(broker.session, "ensure"):

@@ -4,7 +4,7 @@ Standalone Kotak Neo executor for the QuantEngine desk. It reads
 `stream:order_intents_kotak_sandbox` and publishes `stream:executions` with
 `broker_id=kotak_sandbox`.
 
-Orders go to Neo `environment=uat` only. Fills come from the Neo order feed
+Orders go to Neo `environment=prod` only. Fills come from the Neo order feed
 (`nOrdNo`, `ordSt`, `fldQty`, `avgPrc`).
 
 Working orders are chased in place. The executor places one DAY limit, waits on

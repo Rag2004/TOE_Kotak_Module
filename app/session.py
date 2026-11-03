@@ -1,4 +1,4 @@
-"""Kotak Neo session: dashboard access token and client code, then TOTP, then MPIN. UAT only."""
+"""Kotak Neo session: dashboard access token and client code, then TOTP, then MPIN. Live (prod) only."""
 from __future__ import annotations
 
 import base64
@@ -15,7 +15,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_KOTAK_KEY = "broker:kotak:uat"
+_KOTAK_KEY = "broker:kotak:prod"
 _neo_consumer_key: contextvars.ContextVar[str] = contextvars.ContextVar("neo_consumer_key", default="")
 
 
@@ -97,10 +97,11 @@ def check_token_and_client_id(access_token: str | None = None, client_id: str | 
         raise SessionError("; ".join(problems))
 
 
-def assert_uat(environment: str | None = None) -> str:
+def assert_neo_environment(environment: str | None = None) -> str:
+    """This desk places live orders. UAT is refused so a leftover uat flag cannot send the token to d-mis."""
     env = str(environment if environment is not None else settings.NEO_ENVIRONMENT).strip().lower()
-    if env != "uat":
-        raise SessionError(f"TOE Kotak refuses environment={env or 'empty'}; only uat is allowed")
+    if env != "prod":
+        raise SessionError(f"TOE Kotak refuses environment={env or 'empty'}; only prod is allowed")
     return env
 
 
@@ -119,11 +120,11 @@ class KotakSession:
 
     def login(self) -> object:
         stored = _load_kotak_redis() or {}
-        environment = assert_uat()
+        environment = assert_neo_environment()
         access_token = str(stored.get("access_token") or settings.NEO_CONSUMER_KEY or "").strip()
         client_id = str(stored.get("client_id") or settings.NEO_UCC or "").strip()
         check_token_and_client_id(access_token, client_id)
-        mobile = str(stored.get("mobile") or settings.NEO_MOBILE_NUMBER or "").strip()
+        mobile = normalize_mobile(stored.get("mobile") or settings.NEO_MOBILE_NUMBER)
         mpin = str(stored.get("mpin") or settings.NEO_MPIN or "").strip()
         missing = [
             name
@@ -173,17 +174,40 @@ def _default_client_factory(environment: str):
     return NeoAPI(consumer_key=key, environment=environment)
 
 
-def _raise_if_rejected(response, step: str) -> None:
-    if response is None:
-        return
+def normalize_mobile(value) -> str:
+    """Kotak expects the registered number with country code, for example +9198..."""
+    text = str(value or "").strip().replace(" ", "").replace("-", "")
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if len(digits) == 10:
+        return "+91" + digits
+    if len(digits) == 12 and digits.startswith("91"):
+        return "+" + digits
+    return text
+
+
+def _session_ready(response) -> bool:
+    """True when MPIN validate returned a Neo session, not an empty body."""
     if not isinstance(response, dict):
-        return
-    status = response.get("status_code") or response.get("stCode")
-    if status in (403, "403"):
-        raise SessionExpired(f"{step} unauthorized")
-    stat = str(response.get("stat") or response.get("status") or "")
-    if stat and stat.lower() not in {"ok", "success", ""} and "error" in response:
-        raise SessionError(f"{step} failed")
+        return False
+    data = response.get("data") if isinstance(response.get("data"), dict) else response
+    status = str(data.get("status") or data.get("stat") or "").lower()
+    token = str(data.get("token") or data.get("Auth") or "").strip()
+    sid = str(data.get("sid") or data.get("Sid") or "").strip()
+    if status == "success":
+        return True
+    return bool(token and sid)
+
+
+def _raise_if_rejected(response, step: str) -> None:
+    if isinstance(response, dict):
+        status = response.get("status_code") or response.get("stCode")
+        if status in (403, "403"):
+            raise SessionExpired(f"{step} unauthorized")
+        stat = str(response.get("stat") or response.get("status") or "")
+        if stat and stat.lower() not in {"ok", "success", ""} and "error" in response:
+            raise SessionError(f"{step} failed")
+    if step == "totp_validate" and not _session_ready(response):
+        raise SessionError("totp_validate did not return a session")
 
 
 session = KotakSession()
