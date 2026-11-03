@@ -40,7 +40,7 @@ def _order_feed_loop() -> None:
             client = session.ensure()
             order_feed.serve(client)
         except SessionError as exc:
-            logger.warning("Order feed waiting for a UAT session: %s", exc)
+            logger.warning("Order feed waiting for a live session: %s", exc)
         except Exception as exc:
             logger.warning("Order feed stopped: %s", exc)
         time.sleep(5)
