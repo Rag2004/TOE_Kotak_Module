@@ -27,12 +27,14 @@ def dispatch_order(intent: dict) -> dict:
     signal_id = str(intent.get("signal_id") or "")
     machine = OrderStateMachine(signal_id)
     try:
-        trading_symbol = symbol_map.resolve(intent)
+        contract = symbol_map.resolve_contract(intent)
+        trading_symbol = str(contract.get("trading_symbol") or "")
+        instrument_token = str(contract.get("instrument_token") or "")
     except SymbolNotFound as exc:
         machine.transition("REJECTED")
         return _result(intent, "", 0.0, "REJECTED", "SYMBOL_NOT_FOUND", str(exc))
 
-    margin = broker_mod.broker.check_margin(intent, trading_symbol)
+    margin = broker_mod.broker.check_margin(intent, trading_symbol, instrument_token=instrument_token)
     if not margin.get("sufficient", True):
         machine.transition("REJECTED")
         return _result(

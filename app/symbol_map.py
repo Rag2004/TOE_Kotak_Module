@@ -5,9 +5,13 @@ import csv
 import io
 import logging
 import re
-from datetime import date
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+
+IST = ZoneInfo("Asia/Kolkata")
+NSE_EPOCH = 315532800
 
 _MONTHS = {
     "JAN": 1,
@@ -23,6 +27,7 @@ _MONTHS = {
     "NOV": 11,
     "DEC": 12,
 }
+_MONTH_NAMES = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
 
 SEGMENT_TO_NEO = {
     "NSE_FNO": "nse_fo",
@@ -39,6 +44,23 @@ SEGMENT_TO_NEO = {
     "BSE_CM": "bse_cm",
     "MCX": "mcx_fo",
     "MCX_FO": "mcx_fo",
+    # Dhan feed / desk intent segments → Neo exchange_segment
+    "IDX_I": "nse_fo",
+    "I": "nse_fo",
+}
+
+# Desk intents carry Dhan underlying_scrip ids; Neo rows use names.
+_SCRIP_SYMBOLS = {
+    "13": "NIFTY",
+    "15": "SENSEX",
+    "1": "SENSEX",
+}
+
+_UNDERLYING_ALIASES = {
+    "NIFTY 50": "NIFTY",
+    "NIFTY50": "NIFTY",
+    "NIFTY BANK": "BANKNIFTY",
+    "BANK NIFTY": "BANKNIFTY",
 }
 
 
@@ -56,6 +78,9 @@ def neo_segment(segment: str) -> str:
     lowered = raw.lower()
     if lowered in {"nse_fo", "bse_fo", "nse_cm", "bse_cm", "mcx_fo", "nse_com"}:
         return lowered
+    # Dhan lowercase feed codes (e.g. idx_i for NIFTY F&O).
+    if lowered in {"idx_i", "i"}:
+        return "nse_fo"
     return lowered
 
 
@@ -71,7 +96,17 @@ def parse_expiry(raw) -> date | None:
         month = _MONTHS.get(named.group(2).upper())
         if month:
             return date(int(named.group(3)), month, int(named.group(1)))
-    return None
+    try:
+        ts = float(text)
+    except ValueError:
+        return None
+    if ts > 1e12:  # milliseconds
+        ts /= 1000.0
+    if ts < 1e9:  # not a unix timestamp
+        return None
+    if ts < 1_700_000_000:
+        ts += NSE_EPOCH
+    return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(IST).date()
 
 
 def parse_strike(raw) -> float | None:
@@ -91,7 +126,15 @@ def _underlying_name(raw: str) -> str:
     text = str(raw or "").strip()
     if ":" in text:
         text = text.split(":")[-1]
-    return text.upper()
+    text = text.upper()
+    text = _UNDERLYING_ALIASES.get(text, text)
+    if text in _SCRIP_SYMBOLS:
+        return _SCRIP_SYMBOLS[text]
+    try:
+        as_int = str(int(float(text)))
+    except (TypeError, ValueError):
+        return text
+    return _SCRIP_SYMBOLS.get(as_int, text)
 
 
 def _option_type(raw: str) -> str:
@@ -103,25 +146,57 @@ def _option_type(raw: str) -> str:
     return text
 
 
+def _cell(row: dict, *names: str):
+    """Read a Neo CSV/search field. Headers may have trailing spaces or a trailing ';'."""
+    for name in names:
+        if name in row and row[name] not in (None, ""):
+            return row[name]
+        semi = f"{name};"
+        if semi in row and row[semi] not in (None, ""):
+            return row[semi]
+    folded = {}
+    for key, value in row.items():
+        norm = str(key).strip().rstrip(";").lower()
+        if norm and norm not in folded and value not in (None, ""):
+            folded[norm] = value
+    for name in names:
+        value = folded.get(str(name).strip().rstrip(";").lower())
+        if value not in (None, ""):
+            return value
+    return None
+
+
 def normalize_row(row: dict) -> dict | None:
-    trading_symbol = str(row.get("pTrdSymbol") or row.get("trdSym") or row.get("trading_symbol") or "").strip()
+    trading_symbol = str(
+        _cell(row, "pTrdSymbol", "trdSym", "trading_symbol") or ""
+    ).strip()
     if not trading_symbol:
         return None
-    segment = neo_segment(str(row.get("pExchSeg") or row.get("exSeg") or row.get("exchange_segment") or ""))
-    underlying = _underlying_name(
-        str(row.get("pSymbolName") or row.get("pSymbol") or row.get("symbol") or "")
+    segment = neo_segment(str(_cell(row, "pExchSeg", "exSeg", "exchange_segment") or ""))
+    underlying = _underlying_name(str(_cell(row, "pSymbolName", "symbol") or ""))
+    instrument_token = str(_cell(row, "pSymbol") or "").strip()
+    if instrument_token.endswith(".0"):
+        instrument_token = instrument_token[:-2]
+    # Prefer the human expiry string; fall back to unix lExpiryDate from Neo CSVs.
+    expiry = parse_expiry(_cell(row, "pExpiryDate", "expiry")) or parse_expiry(
+        _cell(row, "lExpiryDate", "lExpiryDate ")
     )
-    expiry = parse_expiry(row.get("pExpiryDate") or row.get("expiry") or row.get("lExpiryDate"))
-    strike = parse_strike(row.get("dStrikePrice") if row.get("dStrikePrice") not in (None, "") else row.get("strike"))
-    option_type = _option_type(str(row.get("pOptionType") or row.get("option_type") or ""))
+    strike = parse_strike(_cell(row, "dStrikePrice", "strike"))
+    option_type = _option_type(str(_cell(row, "pOptionType", "option_type") or ""))
     return {
         "trading_symbol": trading_symbol,
+        "instrument_token": instrument_token,
         "segment": segment,
         "underlying": underlying,
         "expiry": expiry,
         "strike": strike,
         "option_type": option_type,
     }
+
+
+def neo_expiry_query(expiry: date) -> str:
+    """Neo search_scrip expiry token, e.g. 05NOV2026."""
+    return f"{expiry.day:02d}{_MONTH_NAMES[expiry.month - 1]}{expiry.year}"
 
 
 class SymbolMap:
@@ -151,12 +226,15 @@ class SymbolMap:
         reader = csv.DictReader(io.StringIO(text))
         return self.load_rows(list(reader))
 
-    def resolve(self, intent: dict) -> str:
-        segment = neo_segment(str(intent.get("segment") or ""))
-        underlying = _underlying_name(str(intent.get("underlying") or intent.get("underlying_scrip") or ""))
-        expiry = parse_expiry(intent.get("expiry"))
-        strike = parse_strike(intent.get("strike"))
-        option_type = _option_type(str(intent.get("option_type") or ""))
+    def _match_rows(
+        self,
+        *,
+        segment: str,
+        underlying: str,
+        expiry: date | None,
+        strike: float | None,
+        option_type: str,
+    ) -> list[dict]:
         matches = []
         for row in self._rows:
             if segment and row["segment"] != segment:
@@ -170,11 +248,101 @@ class SymbolMap:
             if strike is not None and row["strike"] is not None and abs(row["strike"] - strike) > 0.01:
                 continue
             matches.append(row)
-        if len(matches) != 1:
-            raise SymbolNotFound(
-                f"segment={segment} underlying={underlying} expiry={expiry} strike={strike} option={option_type} matches={len(matches)}"
+        return matches
+
+    def _search_neo(self, intent: dict, *, segment: str, underlying: str, expiry: date | None, strike: float | None, option_type: str) -> dict | None:
+        if not underlying or expiry is None or strike is None or not option_type:
+            return None
+        try:
+            from app.session import session
+
+            client = session.ensure()
+            search = getattr(client, "search_scrip", None)
+            if not callable(search):
+                return None
+            rows = search(
+                exchange_segment=segment or "bse_fo",
+                symbol=underlying,
+                expiry=neo_expiry_query(expiry),
+                option_type=option_type,
+                strike_price=str(int(strike) if float(strike).is_integer() else strike),
             )
-        return matches[0]["trading_symbol"]
+        except Exception as exc:
+            logger.warning("Neo search_scrip failed: %s", exc)
+            return None
+        rows = _unwrap_search_rows(rows)
+        if not rows:
+            return None
+        normalized = [normalize_row(row) for row in rows if isinstance(row, dict)]
+        normalized = [row for row in normalized if row]
+        matches = []
+        for row in normalized:
+            if segment and row["segment"] and row["segment"] != segment:
+                continue
+            if underlying and row["underlying"] != underlying:
+                continue
+            if expiry and row["expiry"] and row["expiry"] != expiry:
+                continue
+            if option_type and row["option_type"] and row["option_type"] != option_type:
+                continue
+            if strike is not None and row["strike"] is not None and abs(row["strike"] - strike) > 0.01:
+                continue
+            matches.append(row)
+        if len(matches) == 1:
+            return matches[0]
+        # Query already scoped by expiry + strike + CE/PE; one normalized row is enough.
+        if len(normalized) == 1:
+            return normalized[0]
+        return None
+
+    def resolve_contract(self, intent: dict) -> dict:
+        """Trading symbol plus Neo pSymbol used by margin_required."""
+        segment = neo_segment(str(intent.get("segment") or ""))
+        underlying = _underlying_name(str(intent.get("underlying") or intent.get("underlying_scrip") or ""))
+        expiry = parse_expiry(intent.get("expiry"))
+        strike = parse_strike(intent.get("strike"))
+        option_type = _option_type(str(intent.get("option_type") or ""))
+        matches = self._match_rows(
+            segment=segment,
+            underlying=underlying,
+            expiry=expiry,
+            strike=strike,
+            option_type=option_type,
+        )
+        if len(matches) == 1:
+            return matches[0]
+        searched = self._search_neo(
+            intent,
+            segment=segment,
+            underlying=underlying,
+            expiry=expiry,
+            strike=strike,
+            option_type=option_type,
+        )
+        if searched:
+            return searched
+        raise SymbolNotFound(
+            f"segment={segment} underlying={underlying} expiry={expiry} strike={strike} option={option_type} matches={len(matches)}"
+        )
+
+    def resolve(self, intent: dict) -> str:
+        return self.resolve_contract(intent)["trading_symbol"]
+
+
+def _unwrap_search_rows(payload) -> list:
+    """Neo search_scrip may return a list or a dict wrapping the list."""
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+    for key in ("data", "files", "result", "scrips", "list"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+    for value in payload.values():
+        if isinstance(value, list) and value and isinstance(value[0], dict):
+            return value
+    return []
 
 
 symbol_map = SymbolMap()

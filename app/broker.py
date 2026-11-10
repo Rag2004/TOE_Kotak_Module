@@ -118,7 +118,7 @@ class KotakBroker:
                 return row
         return None
 
-    def check_margin(self, intent: dict, trading_symbol: str) -> dict:
+    def check_margin(self, intent: dict, trading_symbol: str, instrument_token: str = "") -> dict:
         from app.config import settings
 
         if settings.TOE_KOTAK_SKIP_MARGIN_CHECK:
@@ -127,22 +127,33 @@ class KotakBroker:
         payload = to_neo_order(intent, trading_symbol)
         if not hasattr(client, "margin_required"):
             return {"sufficient": True, "required": 0.0, "available": 0.0, "error": "no_margin_api"}
-        raw = _call(
-            client,
-            "margin_required",
-            exchange_segment=payload["exchange_segment"],
-            price=payload["price"],
-            order_type=payload["order_type"],
-            product=payload["product"],
-            quantity=payload["quantity"],
-            trading_symbol=trading_symbol,
-            transaction_type=payload["transaction_type"],
-        )
+        token = str(instrument_token or "").strip()
+        if not token:
+            logger.warning("margin_required skipped: missing instrument_token symbol=%s", trading_symbol)
+            return {"sufficient": True, "required": 0.0, "available": 0.0, "error": "no_instrument_token"}
+        price = payload["price"]
+        if _to_float(price) <= 0:
+            price = _price_text(intent.get("ltp") or intent.get("fallback_fill_price"))
+        try:
+            raw = _call(
+                client,
+                "margin_required",
+                exchange_segment=payload["exchange_segment"],
+                price=price,
+                order_type=payload["order_type"],
+                product=payload["product"],
+                quantity=payload["quantity"],
+                instrument_token=token,
+                transaction_type=payload["transaction_type"],
+            )
+        except (TypeError, AttributeError) as exc:
+            logger.warning("margin_required failed open: %s", exc)
+            return {"sufficient": True, "required": 0.0, "available": 0.0, "error": str(exc)}
         if isinstance(raw, dict) and _is_forbidden(raw):
             raise SessionExpired("margin_required unauthorized")
-        required = _first_float(raw, ("reqMargin", "margin", "requiredMargin", "marginUsed"))
-        available = _first_float(raw, ("avlMargin", "availableMargin", "available"))
+        required, available = _margin_amounts(raw)
         if required <= 0 and available <= 0:
+            logger.warning("margin_required unparsed; continuing symbol=%s", trading_symbol)
             return {"sufficient": True, "required": 0.0, "available": 0.0, "error": "unparsed"}
         return {
             "sufficient": available + 1e-6 >= required,
@@ -219,6 +230,24 @@ def _to_float(value) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _margin_amounts(raw) -> tuple[float, float]:
+    """Required is reqdMrgn, else ordMrgn. Available is avlMrgn, else avlCash."""
+    body = raw.get("data") if isinstance(raw, dict) and isinstance(raw.get("data"), dict) else raw
+    if not isinstance(body, dict):
+        return 0.0, 0.0
+    required = _to_float(body.get("reqdMrgn"))
+    if required <= 0:
+        required = _to_float(body.get("ordMrgn"))
+    if required <= 0:
+        required = _first_float(body, ("reqMargin", "margin", "requiredMargin", "marginUsed"))
+    available = _to_float(body.get("avlMrgn"))
+    if available <= 0:
+        available = _to_float(body.get("avlCash"))
+    if available <= 0:
+        available = _first_float(body, ("avlMargin", "availableMargin", "available"))
+    return required, available
 
 
 def _first_float(raw, keys: tuple[str, ...]) -> float:

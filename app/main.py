@@ -40,9 +40,27 @@ def _order_feed_loop() -> None:
             client = session.ensure()
             order_feed.serve(client)
         except SessionError as exc:
-            logger.warning("Order feed waiting for a UAT session: %s", exc)
+            logger.warning("Order feed waiting for a live session: %s", exc)
         except Exception as exc:
             logger.warning("Order feed stopped: %s", exc)
+        time.sleep(5)
+
+
+def _load_scrip_master_loop() -> None:
+    """Warm the symbol map once a Neo session is available."""
+    from app.scrip_master import refresh_symbol_map
+
+    while True:
+        try:
+            client = session.ensure()
+            count = refresh_symbol_map(client)
+            if count > 0:
+                logger.info("TOE Kotak scrip master ready rows=%d", count)
+                return
+        except SessionError as exc:
+            logger.warning("Scrip master waiting for a live session: %s", exc)
+        except Exception as exc:
+            logger.warning("Scrip master load failed: %s", exc)
         time.sleep(5)
 
 
@@ -65,6 +83,7 @@ def startup() -> None:
         name="toe-kotak-intent-consumer",
     ).start()
     threading.Thread(target=_order_feed_loop, daemon=True, name="toe-kotak-order-feed").start()
+    threading.Thread(target=_load_scrip_master_loop, daemon=True, name="toe-kotak-scrip-master").start()
     mark_consumers_started()
     logger.info("TOE Kotak ready (Redis + Mongo + consumers)")
 
