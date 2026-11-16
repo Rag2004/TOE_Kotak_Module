@@ -28,6 +28,17 @@ def health():
     return ready()
 
 
+@router.post("/orders/{order_id}/resume")
+def resume_order(order_id: str):
+    """Resume chase on a working order. Does not place a new one."""
+    from app.resume import resume_working_order
+
+    body = resume_working_order(order_id)
+    if body.get("reason") == "NO_INFLIGHT":
+        return JSONResponse(status_code=404, content=body)
+    return body
+
+
 @router.get("/orders")
 def get_orders():
     result = []

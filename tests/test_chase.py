@@ -44,10 +44,13 @@ class _Redis:
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
+    from app.chase import reset_chase_reservations
+
     symbol_map.load_rows([SENSEX_ROW])
     order_feed.reset_for_tests()
     order_feed.connected = True
     reset_order_states_for_tests()
+    reset_chase_reservations()
     monkeypatch.setattr("app.chase.broker_mod.broker.order_report", lambda order_id: None)
     yield
     order_feed.reset_for_tests()
@@ -519,18 +522,39 @@ def test_live_reference_reads_tick_key_not_working_limit(monkeypatch):
     assert chase.live_reference(intent, 10.0) == 10.0
 
 
+def test_second_chase_does_not_start_while_the_order_is_reserved():
+    from app import chase
+
+    chase.reserve_chase("OID-BUSY")
+    result = chase.chase_working_order(_intent(), "OID-BUSY", 5, 100.0)
+    assert result["status"] == "PENDING"
+    assert result["broker_status"] == "ALREADY_CHASING"
+    assert chase.chase_is_active("OID-BUSY") is True
+
+
 def test_inflight_roundtrip():
     from app import inflight
 
     redis = _Redis()
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr("app.inflight.get_redis", lambda: redis)
-        inflight.save_inflight("sig-1", "OID-9", 5, 100.5)
+        inflight.save_inflight(
+            "sig-1",
+            "OID-9",
+            5,
+            100.5,
+            intent={"signal_id": "sig-1", "side": "SELL", "order_class": "ENTRY", "ltp": 100.5},
+        )
         loaded = inflight.load_inflight("sig-1")
+        by_order = inflight.load_inflight_by_order("OID-9")
         assert loaded["order_id"] == "OID-9"
         assert loaded["quantity"] == 5
         assert loaded["anchor"] == pytest.approx(100.5)
+        assert loaded["intent"]["side"] == "SELL"
+        assert by_order["signal_id"] == "sig-1"
         assert inflight.inflight_key("sig-1") == "toe_kotak:inflight:sig-1"
         assert "toe_kotak:inflight:sig-1" in redis.kv
+        assert "toe_kotak:inflight_order:OID-9" in redis.kv
         inflight.clear_inflight("sig-1")
         assert inflight.load_inflight("sig-1") is None
+        assert inflight.load_inflight_by_order("OID-9") is None

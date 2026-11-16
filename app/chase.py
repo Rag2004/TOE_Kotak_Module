@@ -7,6 +7,7 @@ price. Exit limits follow the market. One execution is returned when the chase e
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 from app import broker as broker_mod
@@ -26,6 +27,39 @@ logger = logging.getLogger(__name__)
 
 _TICK = 0.05
 _ENTRY_SLIP_CAP = 0.10
+_chase_lock = threading.Lock()
+_reserved_orders: set[str] = set()
+
+
+def reserve_chase(order_id: str) -> bool:
+    """One chase loop per working order. A second caller leaves the first loop alone."""
+    order_id = str(order_id or "").strip()
+    if not order_id:
+        return False
+    with _chase_lock:
+        if order_id in _reserved_orders:
+            return False
+        _reserved_orders.add(order_id)
+        return True
+
+
+def release_chase(order_id: str) -> None:
+    order_id = str(order_id or "").strip()
+    if not order_id:
+        return
+    with _chase_lock:
+        _reserved_orders.discard(order_id)
+
+
+def chase_is_active(order_id: str) -> bool:
+    order_id = str(order_id or "").strip()
+    with _chase_lock:
+        return order_id in _reserved_orders
+
+
+def reset_chase_reservations() -> None:
+    with _chase_lock:
+        _reserved_orders.clear()
 
 
 def chase_anchor(intent: dict) -> float:
@@ -122,11 +156,40 @@ def prepare_chase_intent(intent: dict) -> str | None:
     return None
 
 
-def chase_working_order(intent: dict, order_id: str, placed_qty: int, anchor: float) -> dict:
+def chase_working_order(
+    intent: dict,
+    order_id: str,
+    placed_qty: int,
+    anchor: float,
+    *,
+    reserved: bool = False,
+) -> dict:
     """Wait on the feed and modify until the order ends or the entry/exit budget is spent."""
     order_id = str(order_id or "").strip()
     placed_qty = int(placed_qty)
     anchor = float(anchor or 0.0)
+    if not reserved and not reserve_chase(order_id):
+        return _already_chasing(order_id, placed_qty)
+    try:
+        return _chase_loop(intent, order_id, placed_qty, anchor)
+    finally:
+        release_chase(order_id)
+
+
+def _already_chasing(order_id: str, placed_qty: int) -> dict:
+    return _outcome(
+        order_id,
+        "PENDING",
+        "ALREADY_CHASING",
+        "",
+        placed_qty,
+        0.0,
+        "NONE",
+        PRICE_SOURCE_MISSING,
+    )
+
+
+def _chase_loop(intent: dict, order_id: str, placed_qty: int, anchor: float) -> dict:
     is_exit = _is_exit(intent)
     poll = float(getattr(settings, "KOTAK_CHASE_POLL_SEC", 1.0) or 0.0)
     if poll <= 0:

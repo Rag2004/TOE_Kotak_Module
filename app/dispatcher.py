@@ -121,6 +121,7 @@ def _dispatch_chase(intent: dict, machine: OrderStateMachine, trading_symbol: st
         placed_qty,
         anchor,
         security_id=str(intent.get("security_id") or ""),
+        intent=intent,
     )
     _publish_working(intent, order_id, placed_qty)
     try:
