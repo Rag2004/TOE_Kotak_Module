@@ -109,6 +109,8 @@ def prepare_chase_intent(intent: dict) -> str | None:
     """Set a DAY limit on the intent. Returns a broker_status error, or None."""
     anchor = chase_anchor(intent)
     if anchor <= 0:
+        anchor = live_reference(intent, 0)
+    if anchor <= 0:
         return "NO_LIMIT_REFERENCE"
     intent["order_type"] = "LIMIT"
     intent["validity"] = "DAY"

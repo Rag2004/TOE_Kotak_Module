@@ -123,6 +123,24 @@ def test_config_defaults_leave_exit_uncapped_by_four_attempts():
     assert Settings.model_fields["FEED_WAIT_SEC"].default == 8.0
 
 
+def test_prepare_uses_the_live_tick_when_the_intent_has_no_price(monkeypatch):
+    from app import chase
+
+    monkeypatch.setattr(chase, "read_live_ltp", lambda _intent: 42.5)
+    intent = _intent(limit_price=0, ltp=0, fallback_fill_price="")
+    assert chase.prepare_chase_intent(intent) is None
+    assert float(intent["limit_price"]) > 0
+    assert float(intent["_chase_anchor"]) == pytest.approx(42.5)
+
+
+def test_prepare_rejects_when_no_price_and_no_live_tick(monkeypatch):
+    from app import chase
+
+    monkeypatch.setattr(chase, "read_live_ltp", lambda _intent: None)
+    intent = _intent(limit_price=0, ltp=0, fallback_fill_price="")
+    assert chase.prepare_chase_intent(intent) == "NO_LIMIT_REFERENCE"
+
+
 def test_entry_band_and_exit_uncapped_prices():
     from app import chase
 
