@@ -56,6 +56,17 @@ def _chase_enabled() -> bool:
     return bool(getattr(settings, "KOTAK_CHASE_ENABLED", False))
 
 
+def _publish_working(intent: dict, order_id: str, quantity: int) -> None:
+    """Tell RMS the broker order exists before the chase blocks inside this call."""
+    from app.publisher import publish_execution
+
+    payload = _result(intent, order_id, 0.0, "PENDING", "WORKING", "", quantity=quantity)
+    try:
+        publish_execution(payload, datetime.now(timezone.utc).timestamp())
+    except Exception:
+        logger.warning("PENDING execution publish failed signal=%s", intent.get("signal_id"), exc_info=True)
+
+
 def _dispatch_chase(intent: dict, machine: OrderStateMachine, trading_symbol: str) -> dict:
     """Place at most one order and chase it. A redelivery resumes the inflight order id."""
     signal_id = str(intent.get("signal_id") or "")
@@ -104,7 +115,14 @@ def _dispatch_chase(intent: dict, machine: OrderStateMachine, trading_symbol: st
     placed_qty = _qty(intent.get("quantity"))
     anchor = _float(intent.get("_chase_anchor"))
     feed_mod.order_feed.register(signal_id, order_id)
-    inflight.save_inflight(signal_id, order_id, placed_qty, anchor)
+    inflight.save_inflight(
+        signal_id,
+        order_id,
+        placed_qty,
+        anchor,
+        security_id=str(intent.get("security_id") or ""),
+    )
+    _publish_working(intent, order_id, placed_qty)
     try:
         outcome = chase_working_order(intent, order_id, placed_qty, anchor)
     finally:

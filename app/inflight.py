@@ -15,7 +15,13 @@ def inflight_key(signal_id: str) -> str:
     return f"toe_kotak:inflight:{str(signal_id or '').strip()}"
 
 
-def save_inflight(signal_id: str, order_id: str, quantity: int, anchor: float) -> None:
+def save_inflight(
+    signal_id: str,
+    order_id: str,
+    quantity: int,
+    anchor: float,
+    security_id: str = "",
+) -> None:
     signal_id = str(signal_id or "").strip()
     order_id = str(order_id or "").strip()
     if not signal_id or not order_id:
@@ -25,6 +31,7 @@ def save_inflight(signal_id: str, order_id: str, quantity: int, anchor: float) -
             "order_id": order_id,
             "quantity": int(quantity),
             "anchor": float(anchor),
+            "security_id": str(security_id or ""),
         },
         separators=(",", ":"),
     )

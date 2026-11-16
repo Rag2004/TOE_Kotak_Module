@@ -228,7 +228,7 @@ def _give_up(intent: dict, order_id: str, placed_qty: int, reason: str) -> dict:
         return done
     return _outcome(
         order_id,
-        "REJECTED",
+        "CANCELLED",
         reason,
         f"Chase stopped ({reason}) for order {order_id}",
         placed_qty,

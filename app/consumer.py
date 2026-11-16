@@ -134,27 +134,8 @@ def _process_intent(redis_client: redis_lib.Redis, msg_id: str, intent_data: dic
         result = dispatch_order(intent_data)
         result["status"] = str(result.get("status", "")).upper()
     except Exception as exc:
-        logger.exception("Dispatch failed: %s", exc)
-        result = {
-            "order_id": "",
-            "signal_id": signal_id,
-            "strategy_id": strategy_id,
-            "security_id": intent_data.get("security_id", "0"),
-            "side": intent_data.get("side", ""),
-            "quantity": intent_data.get("quantity", "0"),
-            "fill_price": 0.0,
-            "status": "REJECTED",
-            "fill_type": "NONE",
-            "broker_status": "DISPATCH_EXCEPTION",
-            "rejection_reason": str(exc),
-            "segment": intent_data.get("segment", ""),
-            "strike": intent_data.get("strike", "0"),
-            "option_type": intent_data.get("option_type", "CE"),
-            "expiry": intent_data.get("expiry", ""),
-            "order_class": intent_data.get("order_class", "ENTRY"),
-            "order_tag": intent_data.get("order_tag", ""),
-            "filled_at": "",
-        }
+        logger.exception("Dispatch failed before an order id: %s", exc)
+        return
 
     publish_payload = _execution_publish_merge(result, intent_data)
     try:

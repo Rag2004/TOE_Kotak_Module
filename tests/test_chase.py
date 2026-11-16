@@ -200,7 +200,7 @@ def test_entry_stops_at_band_and_budget_cancels_once(monkeypatch):
 
     assert prices == [pytest.approx(110.0)]
     cancel.assert_called_once_with("OID-E")
-    assert result["status"] == "REJECTED"
+    assert result["status"] == "CANCELLED"
     assert result["broker_status"] == "KOTAK_ENTRY_CHASE_EXHAUSTED"
 
 
@@ -253,7 +253,7 @@ def test_modify_rejection_cancels_once(monkeypatch):
     result = chase.chase_working_order(_intent(), "OID-R", 5, 100.0)
 
     cancel.assert_called_once_with("OID-R")
-    assert result["status"] == "REJECTED"
+    assert result["status"] == "CANCELLED"
     assert result["broker_status"] == "KOTAK_MODIFY_REJECTED"
 
 
@@ -358,6 +358,7 @@ def test_dispatch_places_once_and_does_not_repost_original_qty(monkeypatch):
     monkeypatch.setattr(chase, "read_live_ltp", lambda *_a, **_k: 101.0)
     redis = _Redis()
     monkeypatch.setattr("app.inflight.get_redis", lambda: redis)
+    monkeypatch.setattr("app.publisher.publish_execution", lambda *_a, **_k: None)
 
     result = dispatcher.dispatch_order(_intent())
 
@@ -369,12 +370,50 @@ def test_dispatch_places_once_and_does_not_repost_original_qty(monkeypatch):
     assert redis.kv == {}
 
 
+def test_pending_is_published_before_chase_returns(monkeypatch):
+    from app import dispatcher
+
+    _enable_chase(monkeypatch)
+    published = []
+
+    def _publish(payload, _start):
+        published.append(payload["status"])
+
+    monkeypatch.setattr("app.publisher.publish_execution", _publish)
+    monkeypatch.setattr("app.inflight.get_redis", lambda: _Redis())
+    monkeypatch.setattr(dispatcher.broker_mod.broker, "check_margin", lambda *a, **k: {"sufficient": True})
+    monkeypatch.setattr(
+        dispatcher.broker_mod.broker,
+        "place_order",
+        lambda *_a, **_k: {"ok": True, "order_id": "OID-PEND"},
+    )
+
+    def _chase(intent, order_id, qty, anchor):
+        assert published == ["PENDING"]
+        return {
+            "order_id": order_id,
+            "status": "FILLED",
+            "fill_type": "FULL",
+            "quantity": qty,
+            "fill_price": anchor,
+            "broker_status": "NEO_COMPLETE",
+            "rejection_reason": "",
+            "price_source": "AVERAGE_TRADED_PRICE",
+        }
+
+    monkeypatch.setattr(dispatcher, "chase_working_order", _chase)
+    result = dispatcher.dispatch_order(_intent())
+    assert result["status"] == "FILLED"
+    assert published == ["PENDING"]
+
+
 def test_redelivery_resumes_inflight_order(monkeypatch):
     from app import dispatcher, inflight
 
     _enable_chase(monkeypatch)
     redis = _Redis()
     monkeypatch.setattr("app.inflight.get_redis", lambda: redis)
+    monkeypatch.setattr("app.publisher.publish_execution", lambda *_a, **_k: None)
     inflight.save_inflight("sig-chase", "OID-OLD", 5, 100.0)
 
     place = MagicMock()
