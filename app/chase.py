@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 
 _TICK = 0.05
 _ENTRY_SLIP_CAP = 0.10
+_CHEAP_HEDGE_ANCHOR = 1.0
+_CHEAP_HEDGE_CEILING = 1.0
 _chase_lock = threading.Lock()
 _reserved_orders: set[str] = set()
 
@@ -104,20 +106,34 @@ def live_reference(intent: dict, anchor: float) -> float:
     return float(anchor or 0.0)
 
 
+def _is_hedge(intent: dict) -> bool:
+    tag = str(intent.get("order_tag") or "").upper()
+    if "HEDGE" in tag:
+        return True
+    role = str(intent.get("leg_role") or "").strip().lower()
+    return role in {"hedge", "entry_hedge"}
+
+
+def _cheap_hedge_band(intent: dict, anchor: float) -> bool:
+    """Hedge under ₹1 chases up to ₹1 instead of a 10% band that collapses to one tick."""
+    return _is_hedge(intent) and float(anchor or 0.0) < _CHEAP_HEDGE_ANCHOR
+
+
 def entry_limit_price(intent: dict, anchor: float, live: float) -> float:
     """Step toward the market by entry ticks, then clamp to the signal band."""
     tick = _TICK
     steps = max(0, int(getattr(settings, "KOTAK_ENTRY_CHASE_TICKS", 1)))
     slip = entry_slip(intent)
     side = str(intent.get("side", "BUY")).upper()
+    cheap = _cheap_hedge_band(intent, anchor)
     if side == "SELL":
         raw = live - steps * tick
-        floor = anchor * (1.0 - slip)
+        floor = tick if cheap else anchor * (1.0 - slip)
         if floor > 0:
             raw = max(raw, floor)
     else:
         raw = live + steps * tick
-        ceiling = anchor * (1.0 + slip)
+        ceiling = _CHEAP_HEDGE_CEILING if cheap else anchor * (1.0 + slip)
         if ceiling > 0:
             raw = min(raw, ceiling)
     if raw <= 0:

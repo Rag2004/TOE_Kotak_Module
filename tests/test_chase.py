@@ -161,6 +161,23 @@ def test_entry_band_and_exit_uncapped_prices():
     assert px < 100.0 * (1.0 - 0.10)
 
 
+def test_cheap_hedge_chases_up_to_one_rupee():
+    from app import chase
+
+    hedge = _intent(side="BUY", order_class="ENTRY", order_tag="EntryHedge")
+    assert chase.entry_limit_price(hedge, 0.20, 0.80) == pytest.approx(0.85)
+    assert chase.entry_limit_price(hedge, 0.20, 2.00) == pytest.approx(1.00)
+
+    by_role = _intent(side="BUY", order_class="ENTRY", leg_role="hedge")
+    assert chase.entry_limit_price(by_role, 0.20, 0.80) == pytest.approx(0.85)
+
+    plain = _intent(side="BUY", order_class="ENTRY")
+    assert chase.entry_limit_price(plain, 0.20, 0.80) == pytest.approx(0.20)
+
+    dear = _intent(side="BUY", order_class="ENTRY", order_tag="EntryHedge")
+    assert chase.entry_limit_price(dear, 1.50, 2.00) == pytest.approx(1.65)
+
+
 def test_partial_three_of_five_modifies_same_order_then_publishes_three(monkeypatch):
     from app import chase
 
