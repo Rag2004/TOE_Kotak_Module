@@ -39,6 +39,14 @@ def resume_order(order_id: str):
     return body
 
 
+@router.post("/pipeline/cancel")
+def cancel_pipeline():
+    """Cancel broker orders still being chased. Does not flatten positions."""
+    from app.inflight import cancel_working_orders
+
+    return cancel_working_orders()
+
+
 @router.get("/orders")
 def get_orders():
     result = []

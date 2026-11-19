@@ -120,6 +120,35 @@ def intent_consumer_loop(redis_client: redis_lib.Redis) -> None:
             time.sleep(1)
 
 
+def trading_enabled(redis_client) -> bool:
+    """Missing key means the desk has not halted. ``0`` blocks a new place."""
+    try:
+        raw = redis_client.get("desk:trading_enabled")
+    except Exception:
+        logger.warning("trading flag read failed; allowing place")
+        return True
+    if raw is None:
+        return True
+    return str(raw).strip() not in {"0", "false", "False"}
+
+
+def _halted_result(intent_data: dict) -> dict:
+    return {
+        "order_id": "",
+        "signal_id": intent_data.get("signal_id", ""),
+        "strategy_id": intent_data.get("strategy_id", ""),
+        "security_id": intent_data.get("security_id", "0"),
+        "side": intent_data.get("side", ""),
+        "quantity": intent_data.get("quantity", "0"),
+        "fill_price": 0.0,
+        "status": "REJECTED",
+        "fill_type": "NONE",
+        "broker_status": "ACCOUNT_DISABLED",
+        "rejection_reason": "account_disabled",
+        "filled_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def _process_intent(redis_client: redis_lib.Redis, msg_id: str, intent_data: dict) -> None:
     signal_id = intent_data.get("signal_id", "unknown")
     strategy_id = intent_data.get("strategy_id", "unknown")
@@ -131,7 +160,11 @@ def _process_intent(redis_client: redis_lib.Redis, msg_id: str, intent_data: dic
 
     start_time = datetime.now(timezone.utc).timestamp()
     try:
-        result = dispatch_order(intent_data)
+        if not trading_enabled(redis_client):
+            logger.warning("ACCOUNT DISABLED — not placing signal=%s", signal_id)
+            result = _halted_result(intent_data)
+        else:
+            result = dispatch_order(intent_data)
         result["status"] = str(result.get("status", "")).upper()
     except Exception as exc:
         logger.exception("Dispatch failed before an order id: %s", exc)

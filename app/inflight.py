@@ -126,6 +126,51 @@ def load_inflight_by_order(order_id: str) -> dict | None:
     return _load_payload(order_inflight_key(order_id))
 
 
+def list_inflight() -> list[dict]:
+    """Working orders keyed by signal. Skips the order-id mirror keys."""
+    try:
+        client = get_redis()
+        keys = list(client.scan_iter(match="toe_kotak:inflight:*", count=100))
+    except Exception as e:
+        logger.warning("inflight scan failed: %s", e)
+        return []
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for key in keys:
+        text = str(key)
+        if ":inflight_order:" in text:
+            continue
+        payload = _load_payload(text)
+        if not payload:
+            continue
+        order_id = str(payload.get("order_id") or "")
+        if not order_id or order_id in seen:
+            continue
+        seen.add(order_id)
+        rows.append(payload)
+    return rows
+
+
+def cancel_working_orders() -> dict:
+    """Cancel each inflight broker order and drop its Redis record."""
+    from app import broker as broker_mod
+
+    cancelled: list[str] = []
+    failed: list[dict] = []
+    for row in list_inflight():
+        order_id = str(row.get("order_id") or "")
+        signal_id = str(row.get("signal_id") or "")
+        try:
+            broker_mod.broker.cancel_order(order_id)
+        except Exception as exc:
+            logger.warning("pipeline cancel failed order=%s: %s", order_id, exc)
+            failed.append({"order_id": order_id, "error": str(exc)})
+            continue
+        clear_inflight(signal_id)
+        cancelled.append(order_id)
+    return {"cancelled": cancelled, "failed": failed}
+
+
 def clear_inflight(signal_id: str) -> None:
     signal_id = str(signal_id or "").strip()
     if not signal_id:
